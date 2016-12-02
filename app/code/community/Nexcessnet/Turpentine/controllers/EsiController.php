@@ -182,31 +182,26 @@ class Nexcessnet_Turpentine_EsiController extends Mage_Core_Controller_Front_Act
                 Mage::register($key, $value, true);
             }
         }
+
+        /** @var Mage_Core_Model_Layout $layout */
         $layout = Mage::getSingleton('core/layout');
         Mage::getSingleton( 'core/design_package' )
                 ->setPackageName( $esiData->getDesignPackage() )
                 ->setTheme( $esiData->getDesignTheme() );
 
-        // dispatch event for adding handles to layout update
-        Mage::dispatchEvent(
-            'controller_action_layout_load_before',
-            array('action'=>$this, 'layout'=>$layout)
+        $layout->getUpdate()->addHandle(
+            $this->_swapCustomerHandles(
+                $esiData->getLayoutHandles()
+            )
         );
+        $this->loadLayoutUpdates();
 
-        $layoutUpdate = $layout->getUpdate();
-        $layoutUpdate->load($this->_swapCustomerHandles(
-            $esiData->getLayoutHandles() ));
+        
         foreach ($esiData->getDummyBlocks() as $blockName) {
             $layout->createBlock('Mage_Core_Block_Template', $blockName);
         }
 
-        if ( ! $this->getFlag('', self::FLAG_NO_DISPATCH_BLOCK_EVENT)) {
-            Mage::dispatchEvent(
-                'controller_action_layout_generate_xml_before',
-                array('action'=>$this, 'layout'=>$layout)
-            );
-        }
-        $layout->generateXml();
+        $this->generateLayoutXml();
 
         /** @var Nexcessnet_Turpentine_Helper_Data $turpentineHelper */
         $turpentineHelper = Mage::helper('turpentine/data')
@@ -227,7 +222,7 @@ class Nexcessnet_Turpentine_EsiController extends Mage_Core_Controller_Front_Act
         Mage::getModel('turpentine/shim_mage_core_layout')
             ->shim_generateFullBlock($blockNode);
 
-        //find addional blocks that aren't defined in the <block/> but via <reference name="%s">
+        // Find addional blocks that aren't defined in the <block/> but via <reference name="%s">
         $referenceNodes = $layout->getNode()->xpath(sprintf(
             '//reference[@name=\'%s\']',
             $esiData->getNameInLayout() ));
@@ -242,29 +237,22 @@ class Nexcessnet_Turpentine_EsiController extends Mage_Core_Controller_Front_Act
             }
         }
 
-        // dispatch event for adding xml layout elements
-        if ( ! $this->getFlag('', self::FLAG_NO_DISPATCH_BLOCK_EVENT)) {
-            Mage::dispatchEvent(
-                'controller_action_layout_generate_blocks_before',
-                array('action'=>$this, 'layout'=>$layout)
-            );
+        // Add ignore attribute to all nodes that don't need to be generated
+        foreach ($layout->getNode() as $node) {
+            $attributes = $node->attributes();
+            if ((bool)$attributes->ignore) {
+                continue;
+            }
+            if ($node->getName() != 'reference' ||
+                !in_array($attributes->name, $nodesToGenerate)) {
+                $node->addAttribute('ignore', true);
+            }
         }
 
-        foreach (array_unique($nodesToGenerate) as $nodeName) {
-            foreach ($layout->getNode()->xpath(sprintf(
-                    '//reference[@name=\'%s\']', $nodeName )) as $node) {
-                $layout->generateBlocks($node);
-            }
-        }
-        if ($roots = $layout->getNode()->xpath('//block[@name=\'root\']')) {
-            foreach (array('formkey') as $globalBlock) {
-                if ($blocks = $layout->getNode()->xpath(sprintf('//block[@name=\'%s\']', $globalBlock))) {
-                    $dummy = $roots[0]->addChild('reference');
-                    $dummy->appendChild($blocks[0]);
-                    $layout->generateBlocks($dummy);
-                }
-            }
-        }
+        // Generate layout block that aren't ignored
+        $this->generateLayoutBlocks();
+
+        // Get the requested ESI block
         $block = $layout->getBlock($esiData->getNameInLayout());
 
         if ( ! $this->getFlag('', self::FLAG_NO_DISPATCH_BLOCK_EVENT)) {
